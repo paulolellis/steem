@@ -63,7 +63,7 @@ namespace detail {
       void on_pre_apply_block( const chain::block_notification& note );
       void on_post_apply_block( const chain::block_notification& note );
       void on_pre_apply_operation( const chain::operation_notification& note );
-      void on_post_apply_operation( const chain::operation_notification& note );
+      void on_post_apply_transaction( const chain::transaction_notification& note );
 
       void schedule_production_loop();
       block_production_condition::block_production_condition_enum block_production_loop();
@@ -84,7 +84,7 @@ namespace detail {
       boost::signals2::connection   _pre_apply_block_conn;
       boost::signals2::connection   _post_apply_block_conn;
       boost::signals2::connection   _pre_apply_operation_conn;
-      boost::signals2::connection   _post_apply_operation_conn;
+      boost::signals2::connection   _post_apply_transaction_conn;
 
       std::shared_ptr< witness::block_producer >                         _block_producer;
    };
@@ -240,26 +240,29 @@ namespace detail {
       }
    }
 
-   void witness_plugin_impl::on_post_apply_operation( const chain::operation_notification& note )
+   void witness_plugin_impl::on_post_apply_transaction( const chain::transaction_notification& note )
    {
-      switch( note.op.which() )
+      for( const operation& op : note.transaction.operations )
       {
-         case operation::tag< custom_operation >::value:
-         case operation::tag< custom_json_operation >::value:
-         case operation::tag< custom_binary_operation >::value:
+         switch( op.which() )
          {
-            flat_set< account_name_type > impacted;
-            app::operation_get_impacted_accounts( note.op, impacted );
+            case operation::tag< custom_operation >::value:
+            case operation::tag< custom_json_operation >::value:
+            case operation::tag< custom_binary_operation >::value:
+            {
+               flat_set< account_name_type > impacted;
+               app::operation_get_impacted_accounts( op, impacted );
 
-            for( auto& account : impacted )
-               if( _db.is_producing() )
-                  STEEM_ASSERT( _dupe_customs.insert( account ).second, plugin_exception,
-                     "Account ${a} already submitted a custom json operation this block.",
-                     ("a", account) );
+               for( auto& account : impacted )
+                  if( _db.is_producing() )
+                     STEEM_ASSERT( _dupe_customs.insert( account ).second, plugin_exception,
+                        "Account ${a} already submitted a custom json operation this block.",
+                        ("a", account) );
+            }
+               break;
+            default:
+               break;
          }
-            break;
-         default:
-            break;
       }
    }
 
@@ -488,8 +491,8 @@ void witness_plugin::plugin_initialize(const boost::program_options::variables_m
       [&]( const chain::block_notification& note ){ my->on_post_apply_block( note ); }, *this, 0 );
    my->_pre_apply_operation_conn = my->_db.add_pre_apply_operation_handler(
       [&]( const chain::operation_notification& note ){ my->on_pre_apply_operation( note ); }, *this, 0);
-   my->_post_apply_operation_conn = my->_db.add_pre_apply_operation_handler(
-      [&]( const chain::operation_notification& note ){ my->on_post_apply_operation( note ); }, *this, 0);
+   my->_post_apply_transaction_conn = my->_db.add_post_apply_transaction_handler(
+      [&]( const chain::transaction_notification& note ){ my->on_post_apply_transaction( note ); }, *this, 0);
 
    if( my->_witnesses.size() && my->_private_keys.size() )
       my->_chain_plugin.set_write_lock_hold_time( -1 );
@@ -523,7 +526,7 @@ void witness_plugin::plugin_shutdown()
       chain::util::disconnect_signal( my->_pre_apply_block_conn );
       chain::util::disconnect_signal( my->_post_apply_block_conn );
       chain::util::disconnect_signal( my->_pre_apply_operation_conn );
-      chain::util::disconnect_signal( my->_post_apply_operation_conn );
+      chain::util::disconnect_signal( my->_post_apply_transaction_conn );
 
       my->_timer.cancel();
    }
